@@ -17,6 +17,20 @@
 // prefix, so "lobehub/2.2.19" and "lobehub" both count and "lobechat/1.0"
 // does not.
 //
+// Nothing else goes in this list. AgentOf() is not a display rule: magpie
+// reads it for the request's identity — the agent named on the Routing
+// page, the caller keys, the model catalogue an agent is shown, its caps
+// and budgets — so teaching it a deployment's own product token would move
+// that traffic under this name everywhere, not only on the Usage and
+// Sessions pages. A one-letter token is worse still: the match is by
+// prefix, so "k" swallows every other "k..." client.
+//
+// A deployment whose gateway sends its own token is mapped instead, and
+// only where it is reported: settings.ClientAgents (single client counted
+// as an agent magpie knows) read back by usage.ReportedAs. scripts/
+// arrange-client.mjs sets that pair through magpie's own API, and magpie's
+// gateway keeps the client's own name for everything it decides.
+//
 // `icon` is a data:image URI on purpose: magpie decodes it once, keeps it
 // in its own icons folder and serves it from there, so the row needs no
 // network. assets/icon.svg is the source this string is made from —
