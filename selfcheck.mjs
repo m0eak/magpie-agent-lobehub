@@ -9,6 +9,8 @@
 //   internal/provider/plugin_icon.go  a data:image/ URI
 //   internal/provider/icon.go         MaxIcon, SVG sniffing
 //   internal/usage/usage.go           AgentOf() — name, then ua prefix
+//   internal/usage/client_agents.go   ReportedAs() — display-only mapping
+//   internal/gui/api.go               countClient() — what the API refuses
 //
 // What it cannot check without magpie: that magpie loads the module in
 // moejs (this runs it in Node instead), and what the GUI draws.
@@ -101,11 +103,26 @@ check(agent.ua.every((u) => typeof u === 'string' && u === u.toLowerCase() && u 
 
 check(agent.id === 'lobehub', 'agent.id is "lobehub"', agent.id);
 check(agent.name === 'LobeHub', 'agent.name is "LobeHub"', agent.name);
+
+// Exactly one rule: the product token LobeHub's own runtime sends. It is a
+// prefix rule, so "lobehub/2.2.19" and "lobehub" both count.
 check(
   JSON.stringify(agent.ua) === JSON.stringify(['lobehub']),
   'the only ua rule is the "lobehub" prefix',
   JSON.stringify(agent.ua),
 );
+
+// A deployment whose gateway sends another product token must NOT be
+// taught to magpie here: AgentOf() feeds routing, caller keys, the model
+// catalogue an agent is shown and its caps/budgets. A one-letter prefix
+// would also swallow unrelated clients. That environment is served by the
+// display-only ClientAgents mapping instead (scripts/arrange-client.mjs).
+check(
+  agent.ua.every((u) => u.length >= 3),
+  'no single- or two-letter ua prefix: a short prefix swallows unrelated clients',
+  agent.ua.join(', '),
+);
+
 check(!hasConnect, 'module exports no connect: magpie has nothing to write', 'inert by construction');
 
 // The placeholder config, and the promise that it is not LobeHub's.
@@ -194,12 +211,178 @@ const cases = [
   ['lobehub', 'lobehub'],
   ['LobeHub/2.2.19', 'lobehub'],
   ['LobeHub Desktop/2.2.19', 'lobehub'],
+  // A deployment whose gateway sends "k" is NOT named here. The plugin
+  // leaves it alone so the request keeps its own gateway identity, and
+  // scripts/arrange-client.mjs maps it for the Usage and Sessions pages
+  // only (internal/usage/client_agents.go).
+  ['k/2.2.19', 'k'],
+  ['k', 'k'],
+  ['K/2.2.19', 'K'],
+  // ... and a token that merely starts with "k" is untouched, which the
+  // one-letter prefix rule could not promise.
+  ['klm/1.0', 'klm'],
   ['lobechat/1.0', 'lobechat'],
+  ['codex/0.1.0', 'codex'],
+  ['openai-python/1.0', 'openai-python'],
+  ['python-requests/2.32', 'python-requests'],
+  ['node-fetch/3.0', 'node-fetch'],
+  ['okhttp/4.12', 'okhttp'],
   ['curl/8.5.0', 'curl'],
 ];
 for (const [ua, want] of cases) {
   const got = agentOf(ua);
   check(got === want, `UA ${JSON.stringify(ua)} is named ${JSON.stringify(want)}`, got === want ? '' : `got ${JSON.stringify(got)}`);
+}
+
+// ---- scripts/arrange-client.mjs -----------------------------------------
+//
+// The display-only half: settings.ClientAgents maps a client the ledger
+// records ("k") to an agent magpie knows ("lobehub"), and only what the
+// Usage and Sessions pages report — routing, caller keys, caps and budgets
+// stay on AgentOf (internal/usage/client_agents.go:41-49).
+//
+// The tool must be safe by default: a dry run unless --apply, no URL or
+// credential baked in, nothing written to disk.
+
+const toolFile = join(here, 'scripts', 'arrange-client.mjs');
+let tool = null;
+if (!existsSync(toolFile)) {
+  bad('scripts/arrange-client.mjs exists', 'missing');
+} else {
+  try {
+    tool = await import(pathToFileURL(toolFile).href);
+    ok('scripts/arrange-client.mjs imports');
+  } catch (err) {
+    bad('scripts/arrange-client.mjs imports', err.message);
+  }
+}
+
+if (tool) {
+  const {
+    ARRANGE_PATH,
+    DEFAULT_CLIENT,
+    DEFAULT_AS,
+    parseArgs,
+    buildRequest,
+    run,
+  } = tool;
+
+  check(ARRANGE_PATH === '/api/usage/arrange', 'the tool targets magpie\'s POST /api/usage/arrange', ARRANGE_PATH);
+  check(DEFAULT_CLIENT === 'k', 'the tool\'s default client is "k"', DEFAULT_CLIENT);
+  check(DEFAULT_AS === 'lobehub', 'the tool\'s default agent is "lobehub"', DEFAULT_AS);
+  check(typeof parseArgs === 'function' && typeof buildRequest === 'function' && typeof run === 'function', 'the tool exports parseArgs, buildRequest and run');
+
+  const URL_ = 'http://magpie.test:3430';
+  const KEY = 'test-key-0123456789';
+
+  const quiet = () => {};
+  const fakeFetch = (reply = { clientAgents: { k: 'lobehub' } }, status = 200) => {
+    const calls = [];
+    const fn = async (url, init) => {
+      calls.push({ url, init });
+      const body = JSON.stringify(reply);
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => JSON.parse(body),
+        text: async () => body,
+      };
+    };
+    fn.calls = calls;
+    return fn;
+  };
+
+  // Default is a dry run: parseArgs says so, and run() sends nothing.
+  const defaults = parseArgs([], { MAGPIE_WEB_URL: URL_ });
+  check(defaults.apply === false, 'parseArgs: --apply is off by default', JSON.stringify(defaults.apply));
+  check(defaults.client === 'k' && defaults.as === 'lobehub', 'parseArgs: the default mapping is k → lobehub', `${defaults.client} → ${defaults.as}`);
+  check(Array.isArray(defaults.errors) && defaults.errors.length === 0, 'parseArgs: no errors without arguments', (defaults.errors || []).join('; '));
+
+  const previewFetch = fakeFetch();
+  const preview = await run({ argv: [], env: { MAGPIE_WEB_URL: URL_ }, fetchImpl: previewFetch, log: quiet });
+  check(previewFetch.calls.length === 0, 'run without --apply sends no request', `${previewFetch.calls.length} call(s)`);
+  check(preview.ok === true && preview.applied === false, 'run without --apply reports a preview, not a write', JSON.stringify({ ok: preview.ok, applied: preview.applied }));
+
+  // An explicit --dry-run together with --apply is a contradiction.
+  const both = parseArgs(['--apply', '--dry-run'], {});
+  check(both.errors.length > 0, 'parseArgs refuses --apply together with --dry-run', both.errors.join('; '));
+
+  // Unknown flags are refused rather than ignored.
+  const unknown = parseArgs(['--nope'], {});
+  check(unknown.errors.length > 0, 'parseArgs refuses an unknown flag', unknown.errors.join('; '));
+
+  // --apply without a key cannot authenticate: refuse before sending.
+  const noKeyFetch = fakeFetch();
+  const noKey = await run({ argv: ['--apply', '--url', URL_], env: {}, fetchImpl: noKeyFetch, log: quiet });
+  check(noKey.ok === false, 'run --apply without a key fails', JSON.stringify(noKey.errors || noKey.error));
+  check(noKeyFetch.calls.length === 0, 'run --apply without a key sends nothing', `${noKeyFetch.calls.length} call(s)`);
+
+  // magpie's countClient refuses clients that are agents themselves, the
+  // nameless "other" and magpie's own calls (internal/gui/api.go:2468).
+  for (const client of ['other', 'magpie', 'Magpie-router', 'lobehub']) {
+    const f = fakeFetch();
+    const r = await run({ argv: ['--apply', '--client', client], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: f, log: quiet });
+    check(r.ok === false && f.calls.length === 0, `run refuses client ${JSON.stringify(client)} before sending`);
+  }
+
+  // A base URL with credentials in it is refused: it would leak into logs.
+  const creds = await run({ argv: [], env: { MAGPIE_WEB_URL: 'http://user:pw@magpie.test:3430' }, fetchImpl: fakeFetch(), log: quiet });
+  check(creds.ok === false, 'run refuses a base URL carrying credentials');
+
+  // A non-http scheme is refused.
+  const scheme = await run({ argv: [], env: { MAGPIE_WEB_URL: 'ftp://magpie.test:3430' }, fetchImpl: fakeFetch(), log: quiet });
+  check(scheme.ok === false, 'run refuses a non-http(s) base URL');
+
+  // The request shape: POST, JSON body {"count":{"client","as"}}, and the
+  // page's sign-in cookie named for the port (internal/gui/web.go:327).
+  const applyFetch = fakeFetch();
+  const applied = await run({
+    argv: ['--apply'],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: applyFetch,
+    log: quiet,
+  });
+  check(applied.ok === true && applied.applied === true, 'run --apply sends the mapping', JSON.stringify({ ok: applied.ok, applied: applied.applied, errors: applied.errors }));
+  check(applyFetch.calls.length === 1, 'run --apply sends exactly one request', `${applyFetch.calls.length} call(s)`);
+
+  const sent = applyFetch.calls[0] || { url: '', init: { headers: {}, body: '' } };
+  check(sent.url === URL_ + ARRANGE_PATH, 'the request goes to <base>/api/usage/arrange', sent.url);
+  check(sent.init.method === 'POST', 'the request is a POST', sent.init.method);
+  check(sent.init.body === JSON.stringify({ count: { client: 'k', as: 'lobehub' } }), 'the body is {"count":{"client":"k","as":"lobehub"}}', sent.init.body);
+  check(
+    String(sent.init.headers?.cookie || sent.init.headers?.Cookie || '') === `magpie_web_3430=${KEY}`,
+    'the key rides in the page cookie named for the port',
+    String(sent.init.headers?.cookie || sent.init.headers?.Cookie || '').replace(KEY, '<key>'),
+  );
+  check(
+    String(sent.init.headers?.['content-type'] || sent.init.headers?.['Content-Type'] || '').startsWith('application/json'),
+    'the request declares a JSON body',
+  );
+  check(applied.confirmed === true, 'run --apply reads the answer back and confirms the mapping', JSON.stringify(applied.clientAgents));
+
+  // --undo counts the client on its own again (as ""), which is how the
+  // page's menu takes a pair out.
+  const undoFetch = fakeFetch({ clientAgents: {} });
+  const undo = await run({
+    argv: ['--apply', '--undo'],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: undoFetch,
+    log: quiet,
+  });
+  check(undoFetch.calls[0]?.init?.body === JSON.stringify({ count: { client: 'k', as: '' } }), '--undo sends as "" (count it on its own again)', undoFetch.calls[0]?.init?.body);
+  check(undo.ok === true && undo.confirmed === true, '--undo confirms the pair is gone', JSON.stringify(undo.clientAgents));
+
+  // buildRequest is the pure half the tests above lean on: no credentials
+  // in the URL, no key in the body.
+  const req = buildRequest({ baseUrl: URL_, key: KEY, client: 'k', as: 'lobehub' });
+  check(!JSON.stringify(req).includes(KEY) || req.url.indexOf(KEY) === -1, 'the key never appears in the URL', req.url);
+
+  // The tool's own hygiene: no baked-in address, no credential, no fs.
+  const toolSrc = readFileSync(toolFile, 'utf8');
+  check(!/https?:\/\//.test(toolSrc), 'the tool bakes in no URL');
+  check(!/127\.0\.0\.1|localhost/i.test(toolSrc), 'the tool bakes in no default host');
+  check(!/from\s*['"]node:fs['"]|require\(\s*['"]fs['"]\s*\)/.test(toolSrc), 'the tool writes nothing to disk (no fs)');
+  check(!/process\.env\.\w+\s*=/.test(toolSrc), 'the tool sets no environment variables');
 }
 
 // ---- summary -------------------------------------------------------------

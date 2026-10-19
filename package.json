@@ -1,6 +1,6 @@
 {
   "name": "magpie-agent-lobehub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Magpie agent plugin that names LobeHub's requests (User-Agent: lobehub/...) in Usage and draws them with the LobeHub icon. Recognition and icon only: it writes nothing.",
   "license": "MIT",
   "author": "m0eak",
@@ -15,12 +15,14 @@
   "files": [
     "agent.js",
     "assets/icon.svg",
+    "scripts/arrange-client.mjs",
     "selfcheck.mjs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "check": "node selfcheck.mjs"
+    "check": "node selfcheck.mjs",
+    "arrange": "node scripts/arrange-client.mjs"
   },
   "engines": {
     "node": ">=18"
