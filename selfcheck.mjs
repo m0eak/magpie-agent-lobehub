@@ -272,75 +272,116 @@ if (tool) {
   check(DEFAULT_AS === 'lobehub', 'the tool\'s default agent is "lobehub"', DEFAULT_AS);
   check(typeof parseArgs === 'function' && typeof buildRequest === 'function' && typeof run === 'function', 'the tool exports parseArgs, buildRequest and run');
 
+  const quiet = () => {};
   const URL_ = 'http://magpie.test:3430';
   const KEY = 'test-key-0123456789';
+  const ORIGIN = 'http://magpie.test:3430';
 
-  const quiet = () => {};
-  const fakeFetch = (reply = { clientAgents: { k: 'lobehub' } }, status = 200) => {
+  // What magpie answers a settings write with: settingsState(), whose
+  // version, dir and gateway are always there (internal/gui/api.go:346-350),
+  // while clientAgents rides along only when some pair is set — its
+  // `omitempty` (internal/settings/settings.go:549) leaves the field out of
+  // an empty map.
+  const stateReply = (clientAgents) => {
+    const body = {
+      version: 'v0.1.1290',
+      dir: '~/.config/magpie',
+      gateway: 'http://magpie.test:3425',
+      builtins: [],
+      jsRoutings: [],
+    };
+    if (clientAgents !== undefined) body.clientAgents = clientAgents;
+    return body;
+  };
+
+  const fakeFetch = (reply = stateReply({ k: 'lobehub' }), status = 200, asText = false) => {
     const calls = [];
+    const text = asText ? String(reply) : JSON.stringify(reply);
     const fn = async (url, init) => {
       calls.push({ url, init });
-      const body = JSON.stringify(reply);
       return {
         ok: status >= 200 && status < 300,
         status,
-        json: async () => JSON.parse(body),
-        text: async () => body,
+        json: async () => JSON.parse(text),
+        text: async () => text,
       };
     };
     fn.calls = calls;
     return fn;
   };
 
-  // Default is a dry run: parseArgs says so, and run() sends nothing.
+  // ---- arguments ---------------------------------------------------------
+
   const defaults = parseArgs([], { MAGPIE_WEB_URL: URL_ });
   check(defaults.apply === false, 'parseArgs: --apply is off by default', JSON.stringify(defaults.apply));
   check(defaults.client === 'k' && defaults.as === 'lobehub', 'parseArgs: the default mapping is k → lobehub', `${defaults.client} → ${defaults.as}`);
   check(Array.isArray(defaults.errors) && defaults.errors.length === 0, 'parseArgs: no errors without arguments', (defaults.errors || []).join('; '));
+  check(defaults.cookieName === 'magpie_web_3430', 'parseArgs: the cookie name is derived from the port by default', defaults.cookieName);
 
-  const previewFetch = fakeFetch();
-  const preview = await run({ argv: [], env: { MAGPIE_WEB_URL: URL_ }, fetchImpl: previewFetch, log: quiet });
-  check(previewFetch.calls.length === 0, 'run without --apply sends no request', `${previewFetch.calls.length} call(s)`);
-  check(preview.ok === true && preview.applied === false, 'run without --apply reports a preview, not a write', JSON.stringify({ ok: preview.ok, applied: preview.applied }));
+  check(parseArgs(['--apply', '--dry-run'], { MAGPIE_WEB_URL: URL_ }).errors.length > 0, 'parseArgs refuses --apply together with --dry-run');
+  check(parseArgs(['--nope'], { MAGPIE_WEB_URL: URL_ }).errors.length > 0, 'parseArgs refuses an unknown flag');
 
-  // An explicit --dry-run together with --apply is a contradiction.
-  const both = parseArgs(['--apply', '--dry-run'], {});
-  check(both.errors.length > 0, 'parseArgs refuses --apply together with --dry-run', both.errors.join('; '));
+  // a root slash is the page itself; anything below it is a different page,
+  // which new URL() would silently drop
+  check(parseArgs([], { MAGPIE_WEB_URL: URL_ + '/' }).errors.length === 0, 'parseArgs accepts the root "/"');
+  check(parseArgs([], { MAGPIE_WEB_URL: URL_ + '/magpie' }).errors.length > 0, 'parseArgs refuses a base URL below the root');
 
-  // Unknown flags are refused rather than ignored.
-  const unknown = parseArgs(['--nope'], {});
-  check(unknown.errors.length > 0, 'parseArgs refuses an unknown flag', unknown.errors.join('; '));
+  const noPath = await run({ argv: [], env: { MAGPIE_WEB_URL: URL_ + '/magpie' }, fetchImpl: fakeFetch(), log: quiet });
+  check(noPath.ok === false, 'run refuses a base URL below the root before sending');
 
-  // --apply without a key cannot authenticate: refuse before sending.
-  const noKeyFetch = fakeFetch();
-  const noKey = await run({ argv: ['--apply', '--url', URL_], env: {}, fetchImpl: noKeyFetch, log: quiet });
-  check(noKey.ok === false, 'run --apply without a key fails', JSON.stringify(noKey.errors || noKey.error));
-  check(noKeyFetch.calls.length === 0, 'run --apply without a key sends nothing', `${noKeyFetch.calls.length} call(s)`);
+  const creds = await run({ argv: [], env: { MAGPIE_WEB_URL: 'http://user:pw@magpie.test:3430' }, fetchImpl: fakeFetch(), log: quiet });
+  check(creds.ok === false, 'run refuses a base URL carrying credentials');
+
+  const scheme = await run({ argv: [], env: { MAGPIE_WEB_URL: 'ftp://magpie.test:3430' }, fetchImpl: fakeFetch(), log: quiet });
+  check(scheme.ok === false, 'run refuses a non-http(s) base URL');
+
+  // magpie's own agent ids are ^[a-z0-9][a-z0-9._-]{0,63}$ and the agent it
+  // is given must be one (countClient: usage.IsAgent), so --as is lowered
+  // and held to that shape
+  const asUpper = parseArgs(['--as', 'LobeHub'], { MAGPIE_WEB_URL: URL_ });
+  check(asUpper.errors.length === 0 && asUpper.as === 'lobehub', 'parseArgs lower-cases --as', asUpper.as);
+  for (const bad of ['lobe hub', 'LobeHub!', '-lobe', 'lobe/hub']) {
+    const f = fakeFetch();
+    const r = await run({ argv: ['--apply', '--as', bad], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: f, log: quiet });
+    check(r.ok === false && f.calls.length === 0, `run refuses the agent ${JSON.stringify(bad)} before sending`);
+  }
+
+  // the page's key is 16+ of letters, digits, - . _ ~ (MAGPIE_WEB_KEY)
+  for (const bad of ['abc def', 'abc=def', 'abc;def', 'abc"def']) {
+    const f = fakeFetch();
+    const r = await run({ argv: ['--apply'], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: bad }, fetchImpl: f, log: quiet });
+    check(r.ok === false && f.calls.length === 0, `run refuses the key ${JSON.stringify(bad)} before sending`);
+  }
 
   // magpie's countClient refuses clients that are agents themselves, the
-  // nameless "other" and magpie's own calls (internal/gui/api.go:2468).
+  // nameless "other" and magpie's own calls (internal/gui/api.go:2473-2495)
   for (const client of ['other', 'magpie', 'Magpie-router', 'lobehub']) {
     const f = fakeFetch();
     const r = await run({ argv: ['--apply', '--client', client], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: f, log: quiet });
     check(r.ok === false && f.calls.length === 0, `run refuses client ${JSON.stringify(client)} before sending`);
   }
 
-  // A base URL with credentials in it is refused: it would leak into logs.
-  const creds = await run({ argv: [], env: { MAGPIE_WEB_URL: 'http://user:pw@magpie.test:3430' }, fetchImpl: fakeFetch(), log: quiet });
-  check(creds.ok === false, 'run refuses a base URL carrying credentials');
+  const noKeyFetch = fakeFetch();
+  const noKey = await run({ argv: ['--apply', '--url', URL_], env: {}, fetchImpl: noKeyFetch, log: quiet });
+  check(noKey.ok === false, 'run --apply without a key fails', JSON.stringify(noKey.errors || noKey.error));
+  check(noKeyFetch.calls.length === 0, 'run --apply without a key sends nothing', `${noKeyFetch.calls.length} call(s)`);
 
-  // A non-http scheme is refused.
-  const scheme = await run({ argv: [], env: { MAGPIE_WEB_URL: 'ftp://magpie.test:3430' }, fetchImpl: fakeFetch(), log: quiet });
-  check(scheme.ok === false, 'run refuses a non-http(s) base URL');
+  // ---- the default: a preview, and nothing sent --------------------------
 
-  // The request shape: POST, JSON body {"count":{"client","as"}}, and the
-  // page's sign-in cookie named for the port (internal/gui/web.go:327).
-  const applyFetch = fakeFetch();
+  const previewFetch = fakeFetch();
+  const preview = await run({ argv: [], env: { MAGPIE_WEB_URL: URL_ }, fetchImpl: previewFetch, log: quiet });
+  check(previewFetch.calls.length === 0, 'run without --apply sends no request', `${previewFetch.calls.length} call(s)`);
+  check(preview.ok === true && preview.applied === false, 'run without --apply reports a preview, not a write', JSON.stringify({ ok: preview.ok, applied: preview.applied }));
+
+  // ---- the request ------------------------------------------------------
+
+  const applyFetch = fakeFetch(stateReply({ k: 'lobehub' }));
+  const lines = [];
   const applied = await run({
     argv: ['--apply'],
     env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
     fetchImpl: applyFetch,
-    log: quiet,
+    log: (l) => lines.push(l),
   });
   check(applied.ok === true && applied.applied === true, 'run --apply sends the mapping', JSON.stringify({ ok: applied.ok, applied: applied.applied, errors: applied.errors }));
   check(applyFetch.calls.length === 1, 'run --apply sends exactly one request', `${applyFetch.calls.length} call(s)`);
@@ -359,32 +400,127 @@ if (tool) {
     'the request declares a JSON body',
   );
   check(applied.confirmed === true, 'run --apply reads the answer back and confirms the mapping', JSON.stringify(applied.clientAgents));
+  check(lines.join('\n').includes(ORIGIN), 'a successful apply names the target origin');
+  check(!lines.join('\n').includes(KEY), 'a successful apply never prints the key');
 
-  // --undo counts the client on its own again (as ""), which is how the
-  // page's menu takes a pair out.
-  const undoFetch = fakeFetch({ clientAgents: {} });
-  const undo = await run({
-    argv: ['--apply', '--undo'],
+  // the client is kept as typed; magpie lower-cases the key it stores
+  // (internal/settings/settings.go:1514-1531) and ReportedAs looks up by
+  // that lower-cased name, so confirmation must too
+  const upperFetch = fakeFetch(stateReply({ k: 'lobehub' }));
+  const upper = await run({
+    argv: ['--apply', '--client', 'K'],
     env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
-    fetchImpl: undoFetch,
+    fetchImpl: upperFetch,
     log: quiet,
   });
-  check(undoFetch.calls[0]?.init?.body === JSON.stringify({ count: { client: 'k', as: '' } }), '--undo sends as "" (count it on its own again)', undoFetch.calls[0]?.init?.body);
-  check(undo.ok === true && undo.confirmed === true, '--undo confirms the pair is gone', JSON.stringify(undo.clientAgents));
+  check(
+    upperFetch.calls[0]?.init?.body === JSON.stringify({ count: { client: 'K', as: 'lobehub' } }),
+    '--client K keeps the case it was given in the body',
+    upperFetch.calls[0]?.init?.body,
+  );
+  check(upper.ok === true && upper.confirmed === true, 'a pair stored under the lower-cased client confirms --client K', JSON.stringify(upper.clientAgents));
 
-  // buildRequest is the pure half the tests above lean on: no credentials
-  // in the URL, no key in the body.
+  // a reverse proxy's cookie name is the one magpie itself set, which is
+  // named for the port magpie listens on, not the port the browser saw
+  const overFetch = fakeFetch(stateReply({ k: 'lobehub' }));
+  const over = await run({
+    argv: ['--apply', '--cookie-name', 'magpie_web_8080'],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: overFetch,
+    log: quiet,
+  });
+  check(
+    overFetch.calls[0]?.init?.headers?.cookie === `magpie_web_8080=${KEY}`,
+    '--cookie-name overrides the name derived from the URL',
+    String(overFetch.calls[0]?.init?.headers?.cookie || '').replace(KEY, '<key>'),
+  );
+  check(over.ok === true, 'the override is what authenticates');
+  check(
+    buildRequest({ baseUrl: URL_, key: KEY }).headers.cookie === `magpie_web_3430=${KEY}`,
+    'without the flag the name is still derived from the port',
+  );
+  check(parseArgs(['--cookie-name', 'bad name'], { MAGPIE_WEB_URL: URL_ }).errors.length > 0, 'parseArgs refuses a cookie name that is not a token');
+
+  // ---- confirmation, and the undo shapes it must not mistake for success --
+
+  const bare = fakeFetch({});
+  const bareRun = await run({ argv: ['--apply'], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: bare, log: quiet });
+  check(bareRun.ok === false && bareRun.confirmed === false, 'apply does not succeed on a bare {}');
+
+  const noMap = fakeFetch(stateReply());
+  const noMapRun = await run({ argv: ['--apply'], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: noMap, log: quiet });
+  check(noMapRun.ok === false && noMapRun.confirmed === false, 'apply does not succeed when clientAgents is absent');
+
+  const undoAbsentFetch = fakeFetch(stateReply());
+  const undoAbsent = await run({
+    argv: ['--apply', '--undo'],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: undoAbsentFetch,
+    log: quiet,
+  });
+  check(
+    undoAbsentFetch.calls[0]?.init?.body === JSON.stringify({ count: { client: 'k', as: '' } }),
+    '--undo sends as "" (count it on its own again)',
+    undoAbsentFetch.calls[0]?.init?.body,
+  );
+  check(
+    undoAbsent.ok === true && undoAbsent.confirmed === true,
+    'undo succeeds on a settings state whose clientAgents is omitted (omitempty)',
+    JSON.stringify({ ok: undoAbsent.ok, confirmed: undoAbsent.confirmed }),
+  );
+
+  const undoBareFetch = fakeFetch({});
+  const undoBare = await run({ argv: ['--apply', '--undo'], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: undoBareFetch, log: quiet });
+  check(undoBare.ok === false && undoBare.confirmed === false, 'undo does not succeed on a bare {} (no settings state)');
+
+  const undoTextFetch = fakeFetch('ok', 200, true);
+  const undoText = await run({ argv: ['--apply', '--undo'], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: undoTextFetch, log: quiet });
+  check(undoText.ok === false && undoText.confirmed === false, 'undo does not succeed on a non-JSON body');
+
+  const undoStillFetch = fakeFetch(stateReply({ k: 'lobehub' }));
+  const undoStill = await run({ argv: ['--apply', '--undo'], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: undoStillFetch, log: quiet });
+  check(undoStill.ok === false && undoStill.confirmed === false, 'undo does not succeed while the pair is still listed');
+
+  const undoUpperFetch = fakeFetch(stateReply({ k: 'lobehub' }));
+  const undoUpper = await run({
+    argv: ['--apply', '--undo', '--client', 'K'],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: undoUpperFetch,
+    log: quiet,
+  });
+  check(undoUpper.ok === false, 'undo reads the lower-cased key too, so a pair under k is not missed');
+
+  // an error answer is never a success, and it says where it failed
+  const failLines = [];
+  const failFetch = fakeFetch('no such route', 404, true);
+  const failed = await run({
+    argv: ['--apply'],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: failFetch,
+    log: (l) => failLines.push(l),
+  });
+  check(failed.ok === false && failed.confirmed === undefined, 'a 404 is a failure');
+  check(failLines.join('\n').includes(ORIGIN), 'a failed apply names the target origin');
+  check(!failLines.join('\n').includes(KEY), 'a failed apply never prints the key');
+
+  // ---- the key stays off the wire's readable parts ----------------------
+
   const req = buildRequest({ baseUrl: URL_, key: KEY, client: 'k', as: 'lobehub' });
-  check(!JSON.stringify(req).includes(KEY) || req.url.indexOf(KEY) === -1, 'the key never appears in the URL', req.url);
+  check(!req.url.includes(KEY), 'the key never appears in the URL');
+  check(!req.body.includes(KEY), 'the key never appears in the body');
+  check(
+    Object.keys(req.headers).some((h) => h.toLowerCase() === 'cookie' && req.headers[h].includes(KEY)),
+    'the key appears only in the cookie header',
+  );
 
-  // The tool's own hygiene: no baked-in address, no credential, no fs.
+  // ---- the tool's own hygiene -------------------------------------------
+
   const toolSrc = readFileSync(toolFile, 'utf8');
   check(!/https?:\/\//.test(toolSrc), 'the tool bakes in no URL');
   check(!/127\.0\.0\.1|localhost/i.test(toolSrc), 'the tool bakes in no default host');
   check(!/from\s*['"]node:fs['"]|require\(\s*['"]fs['"]\s*\)/.test(toolSrc), 'the tool writes nothing to disk (no fs)');
   check(!/process\.env\.\w+\s*=/.test(toolSrc), 'the tool sets no environment variables');
 }
-
 // ---- summary -------------------------------------------------------------
 
 console.log('');
