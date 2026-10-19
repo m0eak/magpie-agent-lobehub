@@ -7,7 +7,7 @@
 //                                     model-or-connect, ua lower-cased
 //   internal/plugin/agent.go          magpie.agent, agent-only package
 //   internal/provider/plugin_icon.go  a data:image/ URI
-//   internal/provider/icon.go         MaxIcon, SVG sniffing
+//   internal/provider/icon.go         MaxIcon, image-format sniffing
 //   internal/usage/usage.go           AgentOf() — name, then ua prefix
 //   internal/usage/client_agents.go   ReportedAs() — display-only mapping
 //   internal/gui/api.go               countClient() — what the API refuses
@@ -56,6 +56,10 @@ check(pkg.license === 'MIT', 'license is MIT', pkg.license);
 const licence = existsSync(join(here, 'LICENSE')) ? readFileSync(join(here, 'LICENSE'), 'utf8') : '';
 check(/MIT License/.test(licence) && /Copyright/.test(licence), 'LICENSE file holds the MIT text');
 check(pkg.type === 'module', 'package is ESM ("type": "module")', pkg.type);
+check(
+  Array.isArray(pkg.files) && pkg.files.includes('assets/lobehub-color.png'),
+  'package includes the official LobeHub PNG asset',
+);
 
 const declared = pkg.magpie?.agent;
 check(typeof declared === 'string' && declared.trim() !== '', 'package.json says "magpie": { "agent": … }', declared);
@@ -170,11 +174,16 @@ check(/已知客户端/.test(readmeText) && /不会出现/.test(readmeText), 'RE
 
 // ---- the icon ------------------------------------------------------------
 
+const OFFICIAL_ICON_URL = 'https://raw.githubusercontent.com/lobehub/lobe-icons/refs/heads/master/packages/static-png/light/lobehub-color.png';
 const icon = agent.icon;
-check(typeof icon === 'string' && /^data:image\//i.test(icon), 'agent.icon is a data:image URI');
+check(
+  typeof icon === 'string' && icon.startsWith('data:image/png;base64,'),
+  'agent.icon is a base64 PNG data URI',
+);
 const comma = typeof icon === 'string' ? icon.indexOf(',') : -1;
 const meta = comma > 0 ? icon.slice('data:'.length, comma) : '';
 const payload = comma > 0 ? icon.slice(comma + 1) : '';
+check(meta === 'image/png;base64', 'icon URI declares the PNG MIME type', meta || '(no metadata)');
 check(/;base64$/i.test(meta), 'icon URI is base64', meta || '(no metadata)');
 
 let bytes = null;
@@ -189,24 +198,30 @@ try {
 check(bytes !== null, 'icon payload decodes as base64');
 check(bytes !== null && bytes.length > 0 && bytes.length <= MAX_ICON, 'icon is not over 1 MB (magpie MaxIcon)', `${bytes?.length ?? 0} bytes`);
 check(
-  bytes !== null && bytes.subarray(0, 1024).toString('utf8').toLowerCase().includes('<svg'),
-  'icon sniffs as SVG (magpie looks for "<svg" in the first 1024 bytes)',
+  bytes !== null && bytes.length >= 128 && bytes.length <= 256 * 1024,
+  'PNG asset has a reasonable size (128 B–256 KiB)',
+  `${bytes?.length ?? 0} bytes`,
+);
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+check(
+  bytes !== null && bytes.length >= PNG_SIGNATURE.length && bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE),
+  'icon has the PNG signature',
 );
 
-const svgFile = join(here, 'assets', 'icon.svg');
-if (!existsSync(svgFile)) {
-  bad('assets/icon.svg is the source of the embedded icon', 'missing');
+const pngFile = join(here, 'assets', 'lobehub-color.png');
+if (!existsSync(pngFile)) {
+  bad('assets/lobehub-color.png is the official icon source', 'missing');
 } else {
-  const svg = readFileSync(svgFile);
-  const same = bytes !== null && svg.equals(bytes);
-  check(same, 'the embedded icon is exactly assets/icon.svg');
-  if (!same) {
-    console.log(`     assets/icon.svg is ${svg.length} bytes; paste this into agent.js:`);
-    console.log(`     ${svg.toString('base64')}`);
-  }
-  const text = svg.toString('utf8');
-  check(/xmlns="http:\/\/www\.w3\.org\/2000\/svg"/.test(text) && /viewBox="/.test(text), 'icon SVG has xmlns and viewBox');
+  const png = readFileSync(pngFile);
+  const same = bytes !== null && png.equals(bytes);
+  check(same, 'the embedded PNG is byte-for-byte assets/lobehub-color.png');
+  check(
+    png.length >= 128 && png.length <= 256 * 1024 && png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE),
+    'official PNG asset has a valid signature and reasonable size',
+    `${png.length} bytes; source: ${OFFICIAL_ICON_URL}`,
+  );
 }
+check(!existsSync(join(here, 'assets', 'icon.svg')), 'legacy assets/icon.svg is removed');
 
 // ---- usage.AgentOf(), as magpie classifies a request --------------------
 

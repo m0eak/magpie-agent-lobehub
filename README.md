@@ -5,6 +5,7 @@
 - 包名：`magpie-agent-lobehub`
 - Agent id：`lobehub`，显示名：`LobeHub`
 - License：MIT
+- 图标来源：LobeHub 官方 lobe-icons 仓库的 [Color Logo PNG](https://raw.githubusercontent.com/lobehub/lobe-icons/refs/heads/master/packages/static-png/light/lobehub-color.png)
 - Node **≥ 18**（仅自检与辅助脚本需要；插件本身在 magpie 的 moejs 里跑，不用 Node）
 
 ---
@@ -194,7 +195,7 @@ magpie plugin add /path/to/magpie-agent-lobehub
 
 - 这是**路径安装**：不下载 Bun、不跑 build、不安装依赖、不执行脚本。
 - 装完 `magpie plugin list` 应能看到这个路径；magpie 每秒检查一次 `plugins.json` 与模块 mtime，刷新 Usage 页即可（Agents 页不会有这一行，见第 9 节），通常不用重启。
-- 也可以只把 `agent.js` 单独喂给 `magpie plugin add ./agent.js`（单文件模式），但会丢掉 `assets/icon.svg` 与自检，不推荐。
+- 也可以只把 `agent.js` 单独喂给 `magpie plugin add ./agent.js`（单文件模式），但会丢掉项目 PNG 资源与自检，不推荐。
 
 ### 卸载
 
@@ -215,7 +216,7 @@ magpie plugin rm /path/to/magpie-agent-lobehub
 1. **Usage / Sessions**：`lobehub/2.2.19` 请求（以及被映射过来的 client）显示 `LobeHub` 与插件图标。名字和图标按 agent id 回填，来源是 `agent.Clients()` —— 它包含**所有**已知 agent，无论是否被检测到（`internal/agent/agents.go:56-69`、`internal/gui/usage.go:41-48`）。
 2. **Usage 行的 “Count as an agent…” 选择器**里能选到 `LobeHub`：它要求 `usage.IsAgent("lobehub")`，由已加载的插件模块提供（`internal/agent/plugged.go:31-40`）。
 3. **Agents 页不会出现 `LobeHub` 这一行。** 那一页画的是 `agent.Detected()`：要求 `config` 指向的文件存在、或有 `dir`、或有能在 PATH 上找到的 `bin`、或有登录痕迹（`internal/agent/agent.go:338-365`）。本插件三样都没有，这是刻意的 —— 那里没有东西可连接，也没有东西需要配置。
-4. 图标是内嵌的 data URI：magpie 第一次见到就解码，存进自己的 `icons/` 目录并从那里提供，之后离线也有图。
+4. 图标是 LobeHub 官方 lobe-icons 仓库的 Color Logo PNG，资源来源：[lobehub-color.png](https://raw.githubusercontent.com/lobehub/lobe-icons/refs/heads/master/packages/static-png/light/lobehub-color.png)。插件将它以内嵌的 PNG data URI 提供：magpie 第一次见到就解码，存进自己的 `icons/` 目录并从那里提供，之后离线也有图。仓库中的 `assets/lobehub-color.png` 是同一资源，自检会验证字节一致。
 
 ---
 
@@ -250,8 +251,8 @@ node selfcheck.mjs      # 等价于 npm run check
 | `magpie.agent` 可解析、包内相对路径、文件存在；无 `main`/`exports` | `internal/plugin/agent.go` |
 | `id` 形如 `^[a-z0-9][a-z0-9._-]{0,63}$`；`config` 非空；`format` ∈ json/yaml/env；`model` 或 `connect` 至少一个 | `internal/agentplug/agentplug.go` `Desc.check()` |
 | `ua` 逐项小写；按 `AgentOf()` 的名字→前缀两段规则对样例 UA 归类 | `internal/usage/usage.go` |
-| icon 是 data URI、base64 可解码、≤ 1 MB、前 1024 字节含小写 `<svg` | `internal/provider/plugin_icon.go`、`icon.go` |
-| 内嵌 base64 与 `assets/icon.svg` **逐字节相同** | 本项目自己的约束 |
+| icon 是 PNG data URI、base64 可解码、≤ 1 MB、PNG 签名正确且尺寸合理 | `internal/provider/plugin_icon.go`、`icon.go` |
+| 内嵌 PNG 与 `assets/lobehub-color.png` **逐字节相同**；旧 SVG 已删除 | 本项目自己的约束 |
 
 此外还断言（本项目自己的不变量）：
 
@@ -275,5 +276,5 @@ node selfcheck.mjs      # 等价于 npm run check
 5. **`lobehub/<version>` 是当前版本观察到的行为，不是长期契约**：它出现在 LobeHub 的 Anthropic 兼容 runtime 里，上游随时可能改。升级 LobeHub 后如果 Usage 里不再出现 LobeHub 行，先看实际 UA 的 product token，再决定是保留 `ua` 还是改用映射。走其它协议时 LobeHub 也可能发 `LobeChat/1.0`、`LobeHub Desktop/<ver>` 或调用方自带的 UA：`LobeHub Desktop/…` 因 product token 是 `LobeHub` 仍会命中；`LobeChat/1.0` 不会（另一条产品线）。
 6. **UA 可被调用方覆盖**：这类请求不会被识别，可用映射兜底。
 7. **只认 UA**：不看 host、路径、模型 id。
-8. **图标是手绘近似**，不是官方商标资源。换图：改 `assets/icon.svg`，跑 `node selfcheck.mjs`，它会把新的 base64 打印出来，粘回 `agent.js` 即通过。
+8. **图标来源与同步**：图标来自 LobeHub 官方 lobe-icons 仓库的 [Color Logo PNG](https://raw.githubusercontent.com/lobehub/lobe-icons/refs/heads/master/packages/static-png/light/lobehub-color.png)，项目副本位于 `assets/lobehub-color.png`，`agent.js` 内嵌相同字节的 PNG data URI。替换资源时同步更新两个副本，并运行 `node selfcheck.mjs` 验证。
 9. **插件卡片图标**：本包没给 `package.json` 的 `magpie.icon`，Plugins › Installed 里插件自己的卡片仍是通用图标；`agent.icon` 用在 Usage / Sessions 里那个名字旁边。

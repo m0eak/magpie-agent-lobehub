@@ -14,7 +14,7 @@
   ],
   "files": [
     "agent.js",
-    "assets/icon.svg",
+    "assets/lobehub-color.png",
     "scripts/arrange-client.mjs",
     "selfcheck.mjs",
     "README.md",
