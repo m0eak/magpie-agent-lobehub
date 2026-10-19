@@ -102,10 +102,11 @@ dry run — nothing was sent
 | `--apply` | 真的发送（缺省只预览） |
 | `--dry-run` | 显式预览；与 `--apply` 同时出现会被拒绝 |
 | `--client <name>` | 要报告的 client，缺省 `k` |
-| `--as <agent>` | 目标 agent，缺省 `lobehub` |
+| `--as <agent>` | 目标 agent，缺省 `lobehub`；会小写化，并按 agent id 格式（`^[a-z0-9][a-z0-9._-]{0,63}$`）校验 |
 | `--undo` | 发送 `as: ""`，把该 client 恢复成按自己算；与 `--as` 互斥 |
 | `--url <url>` | 页面地址；缺省取 `MAGPIE_WEB_URL` |
 | `--key <key>` | 页面 key；缺省取 `MAGPIE_WEB_KEY`（**优先用环境变量**，免得进 shell 历史） |
+| `--cookie-name <name>` | 覆盖由 URL 端口推导出的 cookie 名；反代下必须给（见下） |
 | `--json` | 输出机器可读结果 |
 | `--help` | 帮助 |
 
@@ -116,15 +117,29 @@ dry run — nothing was sent
 - 默认 dry-run，只有显式 `--apply` 才 `fetch`。
 - 不内置任何地址、host 或凭据；源码里没有 URL 字面量。
 - 不 import `fs`，不写任何文件；key 只在内存里，只出现在 cookie 头，不出现在 URL 或 body。
-- 地址里带 `user:pass@`、非 `http(s)`、带 path / `?` / `#` 一律拒绝（`?k=` 属于浏览器登录用的，不该进脚本）。
+- 地址里带 `user:pass@`、非 `http(s)`、或带 `?` / `#` 一律拒绝；path 只接受根 `/`（写成 `…:3430` 或 `…:3430/` 都行），`…:3430/magpie` 这类子路径也拒绝 —— `new URL()` 会静默丢掉它，请求会发去别处。`?k=` 属于浏览器登录用的，不该进脚本。
 - 发送前就拒绝 `other`、`magpie*`、以及与目标相同的 client —— 与 `countClient` 的规则对齐。
-- 发送后把响应里的 `clientAgents` 读回来核对，只有真的生效才返回成功。
+- 发送后不是「2xx 就算成功」：响应必须能认出是 magpie 的 **settings 状态**（`version`、`dir`、`gateway` 三个字段恒定写出，`internal/gui/api.go:346-350`），并且真的体现了这一对（或撤销后不再体现），才返回成功。非 JSON、`{}`、缺 `clientAgents` 的 apply、撤销后仍列出该对，全部是**未确认**（退出码 1）。
 
 ### 为什么用 cookie 而不是 `?k=`
 
 `magpie web` 的页面守卫（`internal/gui/web.go:200-259`）认得两种凭据：URL 上的 `?k=<key>`，或名为 `magpie_web_<port>` 的 cookie（`webHandler` 里 cookie 名就是 `"magpie_web_"+port`，见 `internal/gui/web.go:326-328`）。
 
 `?k=` 那条路径会回 **303 跳转**并把 key 种成 cookie —— 对 `POST` 来说，跳转后 body 就丢了，等于静默不生效。脚本因此直接带 `Cookie: magpie_web_<port>=<key>`，一步到位。
+
+### 反向代理：cookie 名来自 magpie 自己的监听端口
+
+cookie 名里的端口，是 **magpie 后端监听的那个端口**，不是浏览器地址栏里的端口。直连时两者相同，脚本按 URL 端口推导即可；一旦前面挂了 NPM / Caddy / nginx（对外 443、对内 3430 之类），推导出来的名字就错了，请求会以「没有登录 cookie」被拒。
+
+这时显式给名字：
+
+```sh
+export MAGPIE_WEB_URL=<反代对外地址，去掉 ?k=>
+export MAGPIE_WEB_KEY=<key>
+node scripts/arrange-client.mjs --apply --cookie-name magpie_web_3430   # 3430 = magpie 的监听端口
+```
+
+名字怎么来的：`webHandler` 用 `net.SplitHostPort` 得到的端口拼出 `"magpie_web_"+port`（`internal/gui/web.go:326-328`）。所以先确认 magpie 实际监听端口（容器端口映射的**内部**端口，或 `MAGPIE_ADDR`），再拼这个名字；名字的字符集限定为字母、数字、`. _ -`。
 
 ---
 
@@ -148,13 +163,16 @@ dry run — nothing was sent
 4. 该行名字下方出现 `with k`，说明 `k` 已被计入 LobeHub 行；
 5. 撤销：同一行的 ⋮ → **Count k on its own**，或跑 `--apply --undo`。
 
+> 脚本的撤销会核对返回的 settings 状态：成对映射被清空后，magpie 的 `clientAgents` 因 `omitempty` 整段消失，此时只有响应确认是 magpie settings 状态才算成功。若脚本报「未确认」，以上面第 5 步的 GUI 显示为准 —— 那里画的就是 magpie 真正持有的映射。
+
 （脚本与 GUI 写的是同一个字段、走同一个 API，效果等价。）
 
 ---
 
 ## 7. 验证清单
 
-- 脚本：`--apply` 后打印 `applied — k is counted as lobehub …`，且 `--json` 里 `clientAgents` 含 `"k": "lobehub"`。
+- 脚本：`--apply` 后打印 `applied on <origin> — k is counted as lobehub …`（origin 只含 scheme/host/port，不含凭据），且 `--json` 里 `clientAgents` 含 `"k": "lobehub"`。
+- 脚本：`--apply --undo` 后 `clientAgents` 里不再有该 client；若报未确认，去 GUI 的 `k` 行看还有没有 `with k`。
 - Usage 页：Agents 列表出现/合并到 **LobeHub** 行，像 `with k`，图标是插件那张。
 - **Routing 页：`k` 仍然是 `k`。** 这是关键断言 —— 映射不碰网关身份，Routing 日志、caller key、模型目录与 caps 都不变。
 - 取消映射后，历史统计立刻按原样重新计算（`ReportedAs` 是读时翻译，不改已写的记录）。
@@ -230,7 +248,9 @@ node selfcheck.mjs      # 等价于 npm run check
 
 - `agent.ua` **精确等于** `["lobehub"]`；`k/2.2.19`、`klm/1.0` 不被吞。
 - 任何 `ua` 项长度 ≥ 3，防止单字母前缀再次混进来。
-- 辅助脚本：默认 dry-run（不调用 `fetch`）、`--apply` 才发一次 POST、body 精确为 `{"count":{"client":"k","as":"lobehub"}}`、cookie 名为 `magpie_web_<port>`、`--undo` 发 `as: ""`、缺 key / `other` / `magpie*` / 带凭据或非 http 的 URL 都在发送前被拒。
+- 辅助脚本：默认 dry-run（不调用 `fetch`）、`--apply` 才发一次 POST、body 精确为 `{"count":{"client":"k","as":"lobehub"}}`、cookie 名为 `magpie_web_<port>`、`--undo` 发 `as: ""`、缺 key / `other` / `magpie*` / 非法 agent id / 非法 key 字符集 / 带凭据或非 http 的地址 / 非根 path 都在发送前被拒。
+- 回读确认：`--client K` 的 body 保留原样，但按 magpie 的存储方式用小写 `k` 回读确认；`{}`、非 JSON 一律不算成功；`--undo` 只在确认是 magpie settings 状态时，才把「字段缺失」当作清空成功。
+- `--cookie-name` 覆盖按端口推导的名字，不覆盖时仍推导；成功/失败输出回显目标 origin，且从不打印 key。
 - 脚本源码不含 URL 字面量、不含默认 host、不 import `fs`、不写环境变量。
 
 它**不做**的事：不启动 magpie，不证明 moejs 能编译该模块（用 Node 导入验证 ESM 形状），也不验证 GUI 实际绘制。
@@ -243,7 +263,7 @@ node selfcheck.mjs      # 等价于 npm run check
 2. **映射按小写匹配**：ledger 存的是 `AgentOf` 的原始大小写（`K/2.2.19` 记作 `K`），而查表时 `ReportedAs` 会 `ToLower`，所以 `k` 与 `K` 都能命中同一条映射。
 3. **一条映射对应一个 client**：别的 client 要单独映射，脚本可重复执行（`--client <name>`）。
 4. **需要 magpie 有 ClientAgents**：更老的版本没有这个 API；不要退回「加 UA 规则」的老路（第 2 节）。
-5. **`lobehub/<version>` 只由 Anthropic 兼容 runtime 设置**。走其它协议时 LobeHub 可能发 `LobeChat/1.0`、`LobeHub Desktop/<ver>` 或调用方自带的 UA：`LobeHub Desktop/…` 因 product token 是 `LobeHub` 仍会命中；`LobeChat/1.0` 不会（另一条产品线）。
+5. **`lobehub/<version>` 是当前版本观察到的行为，不是长期契约**：它出现在 LobeHub 的 Anthropic 兼容 runtime 里，上游随时可能改。升级 LobeHub 后如果 Usage 里不再出现 LobeHub 行，先看实际 UA 的 product token，再决定是保留 `ua` 还是改用映射。走其它协议时 LobeHub 也可能发 `LobeChat/1.0`、`LobeHub Desktop/<ver>` 或调用方自带的 UA：`LobeHub Desktop/…` 因 product token 是 `LobeHub` 仍会命中；`LobeChat/1.0` 不会（另一条产品线）。
 6. **UA 可被调用方覆盖**：这类请求不会被识别，可用映射兜底。
 7. **只认 UA**：不看 host、路径、模型 id。
 8. **图标是手绘近似**，不是官方商标资源。换图：改 `assets/icon.svg`，跑 `node selfcheck.mjs`，它会把新的 base64 打印出来，粘回 `agent.js` 即通过。
