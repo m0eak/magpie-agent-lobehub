@@ -55,6 +55,7 @@ const COOKIE_PREFIX = 'magpie_web_';
 const AGENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const KEY_OK = /^[A-Za-z0-9._~-]+$/;
 const COOKIE_NAME_OK = /^[A-Za-z0-9_.-]+$/;
+const KEY_MIN = 16; // MAGPIE_WEB_KEY: 16 or more (internal/cli/main.go)
 
 const HELP = `Count a client as one of magpie's agents, on the Usage and Sessions
 pages only. Routing, caller keys, model caps and budgets are not touched.
@@ -65,7 +66,8 @@ pages only. Routing, caller keys, model caps and budgets are not touched.
   --as <agent>       the agent to count it as (default: lobehub); lower-cased
   --undo             count the client on its own again (as "")
   --url <url>        the page's address, without ?k= (or ${URL_ENV})
-  --key <key>        the page's key (or ${KEY_ENV}; prefer the variable)
+  --key <key>        the page's key, 16+ of letters, digits, - . _ ~
+                     (or ${KEY_ENV}; prefer the variable)
   --cookie-name <n>  the sign-in cookie's name, when a proxy hides the port
                      magpie listens on (default: magpie_web_<url port>)
   --flag=<value>     every flag also takes =value; a value after = is never
@@ -75,6 +77,9 @@ pages only. Routing, caller keys, model caps and budgets are not touched.
 
 The agent must be one magpie knows, so install and enable the LobeHub
 agent plugin first: magpie refuses an agent it has no row for.
+
+The switches — --apply, --dry-run, --undo, --json, --help — take no
+value: --apply=false is refused, not read as "do not".
 
 Exit codes: 0 done (or a preview), 1 the request failed or did not take,
 2 the arguments were refused and nothing was sent.`;
@@ -131,21 +136,31 @@ export function parseArgs(argv = [], env = {}) {
       return v;
     };
     switch (a) {
+      // a switch is a switch: --apply=false is neither "no" nor "yes", and
+      // guessing which one the caller meant is how a preview becomes a write
       case '--help':
       case '-h':
+        if (inline !== undefined) {
+          err(`${a} takes no value (it is a switch)`);
+          break;
+        }
         opts.help = true;
         return opts;
       case '--apply':
-        opts.apply = true;
+        if (inline !== undefined) err('--apply takes no value (it is a switch)');
+        else opts.apply = true;
         break;
       case '--dry-run':
-        dryRun = true;
+        if (inline !== undefined) err('--dry-run takes no value (it is a switch)');
+        else dryRun = true;
         break;
       case '--undo':
-        opts.undo = true;
+        if (inline !== undefined) err('--undo takes no value (it is a switch)');
+        else opts.undo = true;
         break;
       case '--json':
-        opts.json = true;
+        if (inline !== undefined) err('--json takes no value (it is a switch)');
+        else opts.json = true;
         break;
       case '--client': {
         const v = need(a);
@@ -217,6 +232,8 @@ export function parseArgs(argv = [], env = {}) {
   // that holds anything else is a copy/paste accident, not a key
   if (opts.key && !KEY_OK.test(opts.key)) {
     err(`the key holds something a key cannot: letters, digits, - . _ ~ only (${opts.key.length} chars given)`);
+  } else if (opts.key && opts.key.length < KEY_MIN) {
+    err(`the key is shorter than magpie's own: ${KEY_MIN} characters at least (${opts.key.length} given)`);
   }
 
   if (cookieFlag && !COOKIE_NAME_OK.test(cookieFlag)) {
@@ -230,7 +247,8 @@ export function parseArgs(argv = [], env = {}) {
     try {
       u = new URL(opts.baseUrl);
     } catch {
-      err(`--url / ${URL_ENV} is not an address magpie can serve: ${JSON.stringify(opts.baseUrl)}`);
+      // never the address itself: a pasted link carries ?k=<the page's key>
+      err(`--url / ${URL_ENV} is not an address this tool can read: give the page's own address, without ?k=`);
     }
     if (u) {
       if (u.protocol !== 'http:' && u.protocol !== 'https:') err(`the address must be http or https, not ${u.protocol}`);

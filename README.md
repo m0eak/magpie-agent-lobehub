@@ -105,10 +105,14 @@ dry run — nothing was sent
 | `--as <agent>` | 目标 agent，缺省 `lobehub`；会小写化，并按 agent id 格式（`^[a-z0-9][a-z0-9._-]{0,63}$`）校验 |
 | `--undo` | 发送 `as: ""`，把该 client 恢复成按自己算；与 `--as` 互斥 |
 | `--url <url>` | 页面地址；缺省取 `MAGPIE_WEB_URL` |
-| `--key <key>` | 页面 key；缺省取 `MAGPIE_WEB_KEY`（**优先用环境变量**，免得进 shell 历史） |
+| `--key <key>` | 页面 key，**至少 16 字符**（与 `MAGPIE_WEB_KEY` 一致）；缺省取 `MAGPIE_WEB_KEY`（**优先用环境变量**，免得进 shell 历史） |
 | `--cookie-name <name>` | 覆盖由 URL 端口推导出的 cookie 名；反代下必须给（见下） |
 | `--json` | 输出机器可读结果 |
 | `--help` | 帮助 |
+
+每个取值的参数也接受 `--flag=value`（`--url=…`、`--key=…`、`--client=K`、`--as=…`、`--cookie-name=…`）；`=` 后面的值不会出现在任何消息里，所以 `--key=…` 可以放心用。
+
+**开关不接受 `=value`**：`--apply`、`--dry-run`、`--undo`、`--json`、`--help` 都是布尔开关，写成 `--apply=false` 会被**明确拒绝**并退出码 `2`，而不是被当成「不写」或「写」——猜错一次就等于把预览变成写入。
 
 退出码：`0` 成功或预览，`1` 请求失败/未被确认，`2` 参数被拒（此时**没有发出任何请求**）。
 
@@ -117,6 +121,8 @@ dry run — nothing was sent
 - 默认 dry-run，只有显式 `--apply` 才 `fetch`。
 - 不内置任何地址、host 或凭据；源码里没有 URL 字面量。
 - 不 import `fs`，不写任何文件；key 只在内存里，只出现在 cookie 头，不出现在 URL 或 body。
+- key 只做**字符集 + 长度**校验（`[A-Za-z0-9._~-]+`，≥ 16），报错只报长度，不回报值。
+- 地址读不出 URL 时只报固定文案，**不回显地址本身** —— 粘贴的链接里往往带 `?k=<key>`。
 - 地址里带 `user:pass@`、非 `http(s)`、或带 `?` / `#` 一律拒绝；path 只接受根 `/`（写成 `…:3430` 或 `…:3430/` 都行），`…:3430/magpie` 这类子路径也拒绝 —— `new URL()` 会静默丢掉它，请求会发去别处。`?k=` 属于浏览器登录用的，不该进脚本。
 - 发送前就拒绝 `other`、`magpie*`、以及与目标相同的 client —— 与 `countClient` 的规则对齐。
 - 发送后不是「2xx 就算成功」：响应必须能认出是 magpie 的 **settings 状态**（`version`、`dir`、`gateway` 三个字段恒定写出，`internal/gui/api.go:346-350`），并且真的体现了这一对（或撤销后不再体现），才返回成功。非 JSON、`{}`、缺 `clientAgents` 的 apply、撤销后仍列出该对，全部是**未确认**（退出码 1）。

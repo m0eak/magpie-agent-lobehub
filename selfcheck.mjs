@@ -606,6 +606,91 @@ if (tool) {
     undoWordLines.join(' ').slice(0, 120),
   );
 
+  // ---- a switch is a switch: no =value, and never a silent ignore --------
+
+  const switchCases = [
+    ['--apply', 'false'],
+    ['--apply', '0'],
+    ['--apply', 'true'],
+    ['--undo', 'false'],
+    ['--dry-run', '0'],
+  ];
+  for (const [flag, v] of switchCases) {
+    const f = fakeFetch();
+    const r = await run({ argv: [`${flag}=${v}`], env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY }, fetchImpl: f, log: quiet });
+    check(r.ok === false && f.calls.length === 0, `${flag}=${v} is refused and sends nothing`);
+  }
+
+  const applyFalse = parseArgs(['--apply=false'], { MAGPIE_WEB_URL: URL_ });
+  check(applyFalse.errors.length > 0 && applyFalse.apply === false, '--apply=false does not turn into a write');
+
+  const undoFalse = parseArgs(['--undo=false'], { MAGPIE_WEB_URL: URL_ });
+  check(undoFalse.errors.length > 0 && undoFalse.undo === false, '--undo=false does not turn into an undo');
+
+  const switchLines = [];
+  const switchRun = await run({
+    argv: ['--apply=' + VALUE],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: fakeFetch(),
+    log: (l) => switchLines.push(l),
+  });
+  check(switchRun.ok === false && !switchLines.join('\n').includes(VALUE), 'a value on a switch is refused without echoing it');
+
+  const jsonSwitchLines = [];
+  const jsonSwitch = await run({
+    argv: ['--json', '--apply=false'],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: fakeFetch(),
+    log: (l) => jsonSwitchLines.push(l),
+  });
+  let jsonSwitchDoc = null;
+  try {
+    jsonSwitchDoc = JSON.parse(jsonSwitchLines.join('\n'));
+  } catch {
+    jsonSwitchDoc = null;
+  }
+  check(
+    jsonSwitch.ok === false && jsonSwitchDoc !== null && jsonSwitchDoc.ok === false && Array.isArray(jsonSwitchDoc.errors),
+    '--json reports a switch misuse as JSON too',
+    jsonSwitchLines.join(' ').slice(0, 120),
+  );
+  check(!jsonSwitchLines.join('\n').includes('=false'), 'the JSON error repeats no value');
+
+  // ---- an address is never echoed back -----------------------------------
+  //
+  // A pasted link carries ?k=<MAGPIE_WEB_KEY>, so the message for an address
+  // that does not parse must be fixed text, not the address.
+
+  const urlLeakLines = [];
+  const urlLeak = await run({
+    argv: ['--url=not a url/?k=' + KEY],
+    env: {},
+    fetchImpl: fakeFetch(),
+    log: (l) => urlLeakLines.push(l),
+  });
+  check(urlLeak.ok === false, 'an address that does not parse is refused');
+  check(!urlLeakLines.join('\n').includes(KEY), 'the refused address is not echoed (it may carry ?k=)');
+
+  const queryLeakLines = [];
+  const queryLeak = await run({
+    argv: ['--url=' + URL_ + '/?k=' + KEY],
+    env: {},
+    fetchImpl: fakeFetch(),
+    log: (l) => queryLeakLines.push(l),
+  });
+  check(queryLeak.ok === false && !queryLeakLines.join('\n').includes(KEY), 'an address carrying ?k= is refused without repeating the key');
+
+  // ---- the key magpie itself would take ----------------------------------
+  //
+  // MAGPIE_WEB_KEY is 16 or more characters (main.go), and the value is never
+  // repeated: a short key is refused by its length alone.
+
+  const shortKey = parseArgs(['--apply', '--key=short-key'], { MAGPIE_WEB_URL: URL_ });
+  check(shortKey.errors.length > 0, 'a key shorter than 16 characters is refused');
+  check(!shortKey.errors.join(' ').includes('short-key'), 'the short key is not echoed');
+  check(parseArgs(['--apply', '--key=0123456789abcdef'], { MAGPIE_WEB_URL: URL_ }).errors.length === 0, 'a 16-character key is accepted');
+  check(parseArgs(['--apply', '--key=' + KEY], { MAGPIE_WEB_URL: URL_ }).errors.length === 0, 'the fixture key is accepted');
+
   // ---- the key stays off the wire's readable parts ----------------------
 
   const req = buildRequest({ baseUrl: URL_, key: KEY, client: 'k', as: 'lobehub' });
