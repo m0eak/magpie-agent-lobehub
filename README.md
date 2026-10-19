@@ -51,8 +51,8 @@ magpie 里「一个请求叫什么」有两个完全不同的出口，本仓库�
 | 归一化：key 与 value 都 `TrimSpace`，key 再 `ToLower`，空的丢弃 | `internal/settings/settings.go:1514-1531` |
 | 独立读取入口 `ClientAgentsNow()`（按文件变化重解析，供每次读 ledger 用） | `internal/settings/settings.go:1533-1557` |
 | 翻译函数 `ReportedAs(ua)`：先 `AgentOf(ua)`，再查映射；`to == a` 视为未映射 | `internal/usage/client_agents.go:41-63` |
-| 写入口：`POST /api/usage/arrange`，body `{"count":{"client":"…","as":"…"}}`，`as` 为空字符串表示「取消，按自己算」 | `internal/gui/api.go:1892-1919` |
-| 写校验 `countClient()`：`as` 必须是 magpie 认识的 agent；`client` 不能本身是 agent、不能是 `other`、不能是 `magpie*` | `internal/gui/api.go:2473-2495`（`usage.IsAgent(client)` 在 2486） |
+| 写入口：`POST /api/usage/arrange`，body `{"count":{"client":"…","as":"…"}}`，`as` 为空字符串表示「取消，按自己算」 | `internal/gui/api.go:1892-1926` |
+| 写校验 `countClient()`：`as` 必须是 magpie 认识的 agent；`client` 不能本身是 agent、不能是 `other`、不能是 `magpie*` | `internal/gui/api.go:2473-2494`（`usage.IsAgent(client)` 在 2486） |
 | 应用点（全是「读出来展示」）：Usage 汇总、Sessions 分组、ledger 过滤、历史统计 | `internal/usage/direct.go:100`、`gateway_sessions.go:71,186`、`ledger.go:162,375,429`、`usage.go:882,1014` |
 | 网关侧**完全不读**它：`internal/gateway/` 内对 `ReportedAs` 零引用 | —— |
 | 名字与图标按 agent id 回填，所以映射到 `lobehub` 就直接用上插件的 `name` / `icon` | `internal/usageapi/usageapi.go:22-42`、`internal/gui/usage.go:41-48` |
@@ -146,7 +146,8 @@ node scripts/arrange-client.mjs --apply --cookie-name magpie_web_3430   # 3430 =
 ## 5. 前置条件（顺序不能反）
 
 1. **先装并启用本插件**，让 `lobehub` 成为 magpie 认识的 agent。否则写映射会被拒：
-   `lobehub is not an agent magpie knows`。
+   `lobehub is not an agent magpie knows`。这一步只要求模块能加载（`usage.IsAgent` 的来源），
+   **不看**它在 Agents 页有没有行 —— 它本来就不会有（第 9 节）。
 2. **magpie 要有 ClientAgents 这个功能**。判断方法（二选一，都是只读）：
    - GUI：Usage 页的 Agents 列表里，某个 client 行的 ⋮ 菜单里有 **“Count as an agent…”**；
    - 源码：存在 `internal/usage/client_agents.go`，且 `internal/gui/api.go` 里有 `POST /api/usage/arrange` 路由。
@@ -161,7 +162,7 @@ node scripts/arrange-client.mjs --apply --cookie-name magpie_web_3430   # 3430 =
 2. 点该行右侧的 ⋮（或右键行）→ **Count as an agent…**；
 3. 在弹出的 agent 列表里选 **LobeHub**；
 4. 该行名字下方出现 `with k`，说明 `k` 已被计入 LobeHub 行；
-5. 撤销：同一行的 ⋮ → **Count k on its own**，或跑 `--apply --undo`。
+5. 撤销：**LobeHub 行的** ⋮ 菜单里 → **Count k on its own**（`k` 被计入后自己那一行就并进去了，所以撤销入口在 LobeHub 行），或跑 `--apply --undo`。
 
 > 脚本的撤销会核对返回的 settings 状态：成对映射被清空后，magpie 的 `clientAgents` 因 `omitempty` 整段消失，此时只有响应确认是 magpie settings 状态才算成功。若脚本报「未确认」，以上面第 5 步的 GUI 显示为准 —— 那里画的就是 magpie 真正持有的映射。
 
@@ -172,7 +173,7 @@ node scripts/arrange-client.mjs --apply --cookie-name magpie_web_3430   # 3430 =
 ## 7. 验证清单
 
 - 脚本：`--apply` 后打印 `applied on <origin> — k is counted as lobehub …`（origin 只含 scheme/host/port，不含凭据），且 `--json` 里 `clientAgents` 含 `"k": "lobehub"`。
-- 脚本：`--apply --undo` 后 `clientAgents` 里不再有该 client；若报未确认，去 GUI 的 `k` 行看还有没有 `with k`。
+- 脚本：`--apply --undo` 后打印 `on <origin> — k now has no mapping`（只陈述回包显示的结果，不断言一定写成功）；若报未确认，去 GUI 的 **LobeHub 行**看还有没有 `with k`。
 - Usage 页：Agents 列表出现/合并到 **LobeHub** 行，像 `with k`，图标是插件那张。
 - **Routing 页：`k` 仍然是 `k`。** 这是关键断言 —— 映射不碰网关身份，Routing 日志、caller key、模型目录与 caps 都不变。
 - 取消映射后，历史统计立刻按原样重新计算（`ReportedAs` 是读时翻译，不改已写的记录）。
@@ -186,7 +187,7 @@ magpie plugin add /path/to/magpie-agent-lobehub
 ```
 
 - 这是**路径安装**：不下载 Bun、不跑 build、不安装依赖、不执行脚本。
-- 装完 `magpie plugin list` 应能看到这个路径；magpie 每秒检查一次 `plugins.json` 与模块 mtime，Agents 页刷新即可，通常不用重启。
+- 装完 `magpie plugin list` 应能看到这个路径；magpie 每秒检查一次 `plugins.json` 与模块 mtime，刷新 Usage 页即可（Agents 页不会有这一行，见第 9 节），通常不用重启。
 - 也可以只把 `agent.js` 单独喂给 `magpie plugin add ./agent.js`（单文件模式），但会丢掉 `assets/icon.svg` 与自检，不推荐。
 
 ### 卸载
@@ -196,16 +197,19 @@ magpie plugin rm /path/to/magpie-agent-lobehub
 ```
 
 - 路径插件在 magpie 里 `Name(spec)` 就是**路径本身**（`internal/plugin/store.go`），所以 `rm` 也必须给路径。
-- 可选清理：`rm -rf ~/.config/magpie-agent-lobehub`（仅当曾误给该行挑过模型）。
+- 可选清理：`rm -rf ~/.config/magpie-agent-lobehub`（仅当手动创建过那个占位文件）。
 - 映射是另一件事，卸载插件不会撤销它：先 `--undo`，否则 Usage 里会指向一个已不存在的 agent（名字回退成 id）。
 
 ---
 
-## 9. 预期视觉效果
+## 9. 它在哪儿出现，以及不出现
 
-1. **Agents 页**多一行 `LobeHub`，图标是蓝紫渐变的圆角方块 + 白色 L 形钩。图标是内嵌的 data URI：magpie 第一次见到就解码，存进自己的 `icons/` 目录并从那里提供，之后离线也有图。
-2. `lobehub/2.2.19`（以及映射过的 client）在 Usage / Sessions 里显示 `LobeHub` 与同一张图。
-3. 该行**不需要连接**：没有模型路由、没有账号、没有写入。出现即可用。
+`lobehub` 是**已知客户端**，不是**被检测到的 agent**，这两件事在 magpie 里是分开的：
+
+1. **Usage / Sessions**：`lobehub/2.2.19` 请求（以及被映射过来的 client）显示 `LobeHub` 与插件图标。名字和图标按 agent id 回填，来源是 `agent.Clients()` —— 它包含**所有**已知 agent，无论是否被检测到（`internal/agent/agents.go:56-69`、`internal/gui/usage.go:41-48`）。
+2. **Usage 行的 “Count as an agent…” 选择器**里能选到 `LobeHub`：它要求 `usage.IsAgent("lobehub")`，由已加载的插件模块提供（`internal/agent/plugged.go:31-40`）。
+3. **Agents 页不会出现 `LobeHub` 这一行。** 那一页画的是 `agent.Detected()`：要求 `config` 指向的文件存在、或有 `dir`、或有能在 PATH 上找到的 `bin`、或有登录痕迹（`internal/agent/agent.go:338-365`）。本插件三样都没有，这是刻意的 —— 那里没有东西可连接，也没有东西需要配置。
+4. 图标是内嵌的 data URI：magpie 第一次见到就解码，存进自己的 `icons/` 目录并从那里提供，之后离线也有图。
 
 ---
 
@@ -221,10 +225,9 @@ model: 'model',                                            // 一个普通 key �
 ```
 
 - 没有 `connect`，magpie 除了这个 `model` key 之外**没有任何东西可写**。
-- 只要你不碰 Agents 页这一行，`placeholder.json` 连创建都不会发生（只有挑模型才会写）。
 - 这个路径在**任何 LobeHub 配置目录之外**，自检会断言这一点。
-
-> **请不要在 Magpie 的 Agents 页面为 `LobeHub` 这一行选模型或打开连接。**
+- 它**也不会被创建**：文件不存在 ⇒ `Detected()` 为 false ⇒ Agents 页没有这一行 ⇒ 没有地方可以挑模型。也就是说，占位当前不产生任何行为，它只是让模块通过 schema 检查。
+- 反过来，如果你手动创建了这个文件，magpie 会把它当成被检测到的 agent，Agents 页就会出现这一行，也就能给它挑模型（写进这个文件）。没有必要这么做：插件要做的只是名字与图标，不依赖这个文件。
 
 ---
 
@@ -267,4 +270,4 @@ node selfcheck.mjs      # 等价于 npm run check
 6. **UA 可被调用方覆盖**：这类请求不会被识别，可用映射兜底。
 7. **只认 UA**：不看 host、路径、模型 id。
 8. **图标是手绘近似**，不是官方商标资源。换图：改 `assets/icon.svg`，跑 `node selfcheck.mjs`，它会把新的 base64 打印出来，粘回 `agent.js` 即通过。
-9. **插件卡片图标**：本包没给 `package.json` 的 `magpie.icon`，Plugins › Installed 里插件自己的卡片仍是通用图标；Agents 页 `LobeHub` 那一行用的是 `agent.icon`。
+9. **插件卡片图标**：本包没给 `package.json` 的 `magpie.icon`，Plugins › Installed 里插件自己的卡片仍是通用图标；`agent.icon` 用在 Usage / Sessions 里那个名字旁边。

@@ -149,6 +149,25 @@ const source = readFileSync(agentFile, 'utf8');
 check(!/\bimport\s[^;]*from\s*['"]node:/.test(source) && !/\brequire\s*\(/.test(source), 'module uses no Node API or import');
 check(!/\bprocess\./.test(source), 'module reads no process state');
 
+// ---- where this agent shows up, and where it does not -------------------
+//
+// Loading the module makes `lobehub` a known agent — usage.PluginAgents
+// reads agentplug.List() — which is what names a request on the Usage and
+// Sessions pages, gives that name this row's icon (usageapi.Clients is
+// agent.Clients: "every agent, detected or not") and lets countClient
+// accept it as the agent a client is counted as.
+//
+// It is not an agent magpie detects: agent.Detected() wants a config file
+// that exists, a folder, a bin on PATH or a sign-in, and this plugin has
+// none of them, so the Agents page draws no row for it. The docs may not
+// say otherwise.
+const readmeText = readFileSync(join(here, 'README.md'), 'utf8');
+check(agent.bin === undefined && agent.dir === undefined, 'agent.js declares no bin or dir, so magpie does not detect it');
+check(/detected/i.test(source), 'agent.js says it is not an agent magpie detects');
+check(!/Agents 页[^。\n]{0,12}多一行/.test(readmeText), 'README does not claim a row on the Agents page');
+check(!/为 `LobeHub` 这一行选模型/.test(readmeText), 'README does not send the reader to an Agents row that is not there');
+check(/已知客户端/.test(readmeText) && /不会出现/.test(readmeText), 'README says where the id does show up, and where it does not');
+
 // ---- the icon ------------------------------------------------------------
 
 const icon = agent.icon;
@@ -502,6 +521,90 @@ if (tool) {
   check(failed.ok === false && failed.confirmed === undefined, 'a 404 is a failure');
   check(failLines.join('\n').includes(ORIGIN), 'a failed apply names the target origin');
   check(!failLines.join('\n').includes(KEY), 'a failed apply never prints the key');
+
+  // ---- --flag=value, and nothing secret in a message ---------------------
+
+  const eq = parseArgs(
+    ['--url=' + URL_, '--key=' + KEY, '--client=K', '--as=LobeHub', '--cookie-name=magpie_web_3430'],
+    {},
+  );
+  check(eq.errors.length === 0, 'parseArgs reads --flag=value', (eq.errors || []).join('; '));
+  check(
+    eq.key === KEY && eq.client === 'K' && eq.as === 'lobehub' && eq.baseUrl === URL_,
+    'the values after = are the ones taken',
+    JSON.stringify({ client: eq.client, as: eq.as }),
+  );
+  check(eq.cookieName === 'magpie_web_3430', '--cookie-name=value is read too', eq.cookieName);
+
+  const eqFetch = fakeFetch(stateReply({ k: 'lobehub' }));
+  const eqApply = await run({ argv: ['--apply', '--key=' + KEY], env: { MAGPIE_WEB_URL: URL_ }, fetchImpl: eqFetch, log: quiet });
+  check(eqApply.ok === true, '--key=value authenticates like --key value');
+  check(eqFetch.calls[0]?.init?.headers?.cookie === `magpie_web_3430=${KEY}`, 'the value after = becomes the cookie');
+
+  check(parseArgs(['--key='], { MAGPIE_WEB_URL: URL_ }).errors.length > 0, 'an empty --key= is refused');
+
+  // a value typed after = never comes back, whatever the flag is
+  // a value that must never come back: named so a stray copy is greppable
+  const VALUE = 'leaked-if-printed-0123456789';
+  const unknownLines = [];
+  const unknownRun = await run({
+    argv: ['--nope=' + VALUE],
+    env: { MAGPIE_WEB_URL: URL_ },
+    fetchImpl: fakeFetch(),
+    log: (l) => unknownLines.push(l),
+  });
+  check(unknownRun.ok === false, 'an unknown --flag=value is refused');
+  check(!unknownLines.join('\n').includes(VALUE), 'a refused value never reaches the output');
+  check(unknownLines.join('\n').includes('--nope'), 'the refusal still names the flag');
+
+  const mixedLines = [];
+  const mixedRun = await run({
+    argv: ['--key=' + VALUE, '--nope'],
+    env: { MAGPIE_WEB_URL: URL_ },
+    fetchImpl: fakeFetch(),
+    log: (l) => mixedLines.push(l),
+  });
+  check(mixedRun.ok === false && !mixedLines.join('\n').includes(VALUE), 'a parsed key stays out of another argument\'s error');
+
+  const bareLines = [];
+  const barePos = await run({ argv: [VALUE], env: { MAGPIE_WEB_URL: URL_ }, fetchImpl: fakeFetch(), log: (l) => bareLines.push(l) });
+  check(barePos.ok === false && !bareLines.join('\n').includes(VALUE), 'a value where a flag belongs is not echoed back');
+
+  // --json answers refused arguments with JSON too, and no key in it
+  const jsonLines = [];
+  const jsonRun = await run({
+    argv: ['--json', '--apply', '--key=' + VALUE],
+    env: {},
+    fetchImpl: fakeFetch(),
+    log: (l) => jsonLines.push(l),
+  });
+  check(jsonRun.ok === false, '--json with refused arguments fails');
+  let jsonErr = null;
+  try {
+    jsonErr = JSON.parse(jsonLines.join('\n'));
+  } catch {
+    jsonErr = null;
+  }
+  check(
+    jsonErr !== null && jsonErr.ok === false && Array.isArray(jsonErr.errors),
+    '--json prints one machine-readable error object',
+    jsonLines.join(' ').slice(0, 120),
+  );
+  check(!jsonLines.join('\n').includes(VALUE), 'the machine-readable error carries no key');
+
+  // undo reports what the answer shows, not that a write happened
+  const undoWordLines = [];
+  const undoWord = await run({
+    argv: ['--apply', '--undo'],
+    env: { MAGPIE_WEB_URL: URL_, MAGPIE_WEB_KEY: KEY },
+    fetchImpl: fakeFetch(stateReply()),
+    log: (l) => undoWordLines.push(l),
+  });
+  check(
+    undoWord.ok === true && undoWordLines.join('\n').includes('no mapping'),
+    'undo reports that no mapping is shown now',
+    undoWordLines.join(' ').slice(0, 120),
+  );
 
   // ---- the key stays off the wire's readable parts ----------------------
 

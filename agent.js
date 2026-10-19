@@ -2,15 +2,26 @@
 //
 // magpie loads this module in moejs, in its own process: no Node APIs and
 // no imports outside the plugin folder. It exports one `agent` object,
-// which magpie checks as internal/agentplug's Desc and lists on the
-// Agents page.
+// which magpie checks as internal/agentplug's Desc.
 //
-// There is deliberately no `connect`, `bin` or `dir`: nothing here writes
-// or reads a LobeHub file. `config` + `model` are the inert placeholder
-// the schema needs (agentplug: a module with neither a model key nor a
-// connect has nothing to offer), and the path is this plugin's own,
-// outside every LobeHub config directory. It is created only if someone
-// picks a model for this row by hand — which the README says not to do.
+// What the id is for: loading the module makes `lobehub` a known agent
+// (usage.PluginAgents, from agentplug.List), so usage.AgentOf() can name a
+// request by it, the Usage and Sessions pages draw that name with this
+// row's name and icon (usageapi.Clients is agent.Clients, "every agent,
+// detected or not"), and a ClientAgents pair may name it as the agent a
+// client is counted as (countClient asks usage.IsAgent).
+//
+// What it does not do: put a row on the Agents page. That page lists
+// agent.Detected(), which wants a config file that exists, a folder, a bin
+// on PATH or a sign-in. This plugin has deliberately none of those, so
+// there is no row there, nothing to connect and nothing to configure.
+//
+// `config` + `model` are the inert placeholder the schema needs (agentplug:
+// a module with neither a model key nor a connect has nothing to offer),
+// and the path is this plugin's own, outside every LobeHub config
+// directory. Nothing writes it: no row is listed to pick a model on.
+// Creating that file by hand would make magpie detect the agent and list
+// it — which buys nothing; the name and the icon do not need it.
 //
 // `ua` is what names LobeHub's requests: magpie's usage.AgentOf() takes
 // the User-Agent's product token, lower-cases it, and matches this list by

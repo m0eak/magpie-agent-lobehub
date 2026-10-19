@@ -68,6 +68,8 @@ pages only. Routing, caller keys, model caps and budgets are not touched.
   --key <key>        the page's key (or ${KEY_ENV}; prefer the variable)
   --cookie-name <n>  the sign-in cookie's name, when a proxy hides the port
                      magpie listens on (default: magpie_web_<url port>)
+  --flag=<value>     every flag also takes =value; a value after = is never
+                     echoed, so --key=<key> is safe here
   --json             print the answer as JSON
   --help             this text
 
@@ -100,8 +102,26 @@ export function parseArgs(argv = [], env = {}) {
   let cookieFlag = '';
 
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
+    const raw = argv[i];
+    // --flag=value: the split happens here so what followed = never reaches
+    // a message — it may be a key someone pasted
+    let a = raw;
+    let inline;
+    if (raw.startsWith('--')) {
+      const eq = raw.indexOf('=');
+      if (eq > 2) {
+        a = raw.slice(0, eq);
+        inline = raw.slice(eq + 1);
+      }
+    }
     const need = (flag) => {
+      if (inline !== undefined) {
+        if (inline === '') {
+          err(`${flag} needs a value`);
+          return null;
+        }
+        return inline;
+      }
       const v = argv[i + 1];
       if (v === undefined || v.startsWith('--')) {
         err(`${flag} needs a value`);
@@ -158,8 +178,12 @@ export function parseArgs(argv = [], env = {}) {
         if (v !== null) cookieFlag = v.trim();
         break;
       }
-      default:
-        err(`unknown argument ${JSON.stringify(a)} (try --help)`);
+      default: {
+        // the flag alone when there is one: whatever followed an = could be
+        // a key, and a value where a flag belongs is never echoed
+        const shown = a.startsWith('--') ? JSON.stringify(a.split('=')[0]) : '(a value where a flag belongs)';
+        err(`unknown argument ${shown} (try --help)`);
+      }
     }
   }
 
@@ -285,8 +309,13 @@ export async function run({ argv = [], env = {}, fetchImpl, log = console.log } 
     return { ok: true, help: true, applied: false, opts };
   }
   if (opts.errors.length > 0) {
-    for (const e of opts.errors) say(log, `refused: ${e}`);
-    say(log, 'nothing was sent.');
+    if (opts.json) {
+      // the same machine-readable shape as every other --json answer
+      say(log, JSON.stringify({ ok: false, applied: false, errors: opts.errors }, null, 2));
+    } else {
+      for (const e of opts.errors) say(log, `refused: ${e}`);
+      say(log, 'nothing was sent.');
+    }
     return { ok: false, applied: false, errors: opts.errors, opts };
   }
 
@@ -356,7 +385,7 @@ export async function run({ argv = [], env = {}, fetchImpl, log = console.log } 
     say(log, JSON.stringify({ applied: true, status: res.status, origin, confirmed, clientAgents }, null, 2));
   } else if (confirmed) {
     say(log, opts.as === ''
-      ? `applied on ${origin} — ${opts.client} counts on its own again`
+      ? `on ${origin} — ${opts.client} now has no mapping (the answer shows none)`
       : `applied on ${origin} — ${opts.client} is counted as ${opts.as} on the Usage and Sessions pages`);
     say(log, '  routing, caller keys, the models an agent is shown and its caps and budgets are unchanged');
   } else if (!state) {

@@ -1,6 +1,6 @@
 {
   "name": "magpie-agent-lobehub",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Magpie agent plugin that names LobeHub's requests (User-Agent: lobehub/...) in Usage and draws them with the LobeHub icon. Recognition and icon only: it writes nothing.",
   "license": "MIT",
   "author": "m0eak",
